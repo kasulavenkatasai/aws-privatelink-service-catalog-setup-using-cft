@@ -45,11 +45,11 @@ The infrastructure is deployed through a Service Catalog product, allowing users
            |                       |
        MariaDB Server          MariaDB Client
            |                       |
-       Target Group                  |
+       Target Group                |
            |                       |
-     Network Load Balancer          |
+     Network Load Balancer         |
            |                       |
-    VPC Endpoint Service             |
+    VPC Endpoint Service           |
            |                       |
            +---- AWS PrivateLink ---+
                        |
