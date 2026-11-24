@@ -1,4 +1,4 @@
-Sure. I'll display the README content directly here so you can copy it into a `README.md` file in VS Code.
+
 
 # **AWS PrivateLink Service Catalog Setup Using CloudFormation**
 
@@ -393,4 +393,3 @@ A user can launch one Service Catalog product to provision both Provider and Con
 
 **Technologies used:** AWS CloudFormation, AWS Service Catalog, AWS PrivateLink, VPC, EC2, Network Load Balancer, VPC Endpoint Service, Interface VPC Endpoint, IAM, S3, Systems Manager and MariaDB.
 
-**To save this on your laptop:** Open VS Code → create a file named `README.md` in your project folder → copy the content above → save it.
