@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: Register and maintain the PrivateLink infrastructure Service Catalog product.
+
+Resources:
+  PrivateLinkCloudFormationProduct:
+    Type: AWS::ServiceCatalog::CloudFormationProduct
+    Properties:
+      Name: PrivateLink-Infrastructure-Product
+      Owner: Brillio Demo
+      Distributor: Brillio Demo
+      Description: >
+        Same-account AWS PrivateLink demonstration.
+        Provisions Provider and Consumer VPC infrastructure,
+        MariaDB, Network Load Balancer and Interface Endpoint.
+      ProductType: CLOUD_FORMATION_TEMPLATE
+      ReplaceProvisioningArtifacts: false
+      ProvisioningArtifactParameters:
+        - Name: v1
+          Description: Initial PrivateLink infrastructure version
+          Type: CLOUD_FORMATION_TEMPLATE
+          Info:
+            LoadTemplateFromURL: https://privatelink-bootstrap-sta-privatelinktemplatebucke-e17sthqcxpkw.s3.us-east-1.amazonaws.com/privatelink-single-stack.yaml
+
+        - Name: v2
+          Description: Corrected PrivateLink endpoint service name reference
+          Type: CLOUD_FORMATION_TEMPLATE
+          Info:
+            LoadTemplateFromURL: https://privatelink-bootstrap-sta-privatelinktemplatebucke-e17sthqcxpkw.s3.us-east-1.amazonaws.com/privatelink-single-stack-v2.yaml
+
+        - Name: v3
+          Description: Consumer EC2 Session Manager access enabled
+          Type: CLOUD_FORMATION_TEMPLATE
+          Info:
+            LoadTemplateFromURL: https://privatelink-bootstrap-sta-privatelinktemplatebucke-e17sthqcxpkw.s3.us-east-1.amazonaws.com/privatelink-single-stack-v3.yaml
+
+        - Name: v4
+          Description: Corrected PrivateLink endpoint DNS hostname
+          Type: CLOUD_FORMATION_TEMPLATE
+          Info:
+            LoadTemplateFromURL: https://privatelink-bootstrap-sta-privatelinktemplatebucke-e17sthqcxpkw.s3.us-east-1.amazonaws.com/privatelink-single-stack-v4.yaml
+
+        - Name: v5
+          Description: Provider EC2 Session Manager support
+          Type: CLOUD_FORMATION_TEMPLATE
+          Info:
+            LoadTemplateFromURL: https://privatelink-bootstrap-sta-privatelinktemplatebucke-e17sthqcxpkw.s3.us-east-1.amazonaws.com/privatelink-single-stack-v5.yaml
+
+        - Name: v6
+          Description: Provider SSM support with existing EC2 AMI preserved
+          Type: CLOUD_FORMATION_TEMPLATE
+          Info:
+            LoadTemplateFromURL: https://privatelink-bootstrap-sta-privatelinktemplatebucke-e17sthqcxpkw.s3.us-east-1.amazonaws.com/privatelink-single-stack-v5.yaml
+
+        - Name: v7
+          Description: Pinned existing AMI with Provider SSM access
+          Type: CLOUD_FORMATION_TEMPLATE
+          Info:
+            LoadTemplateFromURL: https://privatelink-bootstrap-sta-privatelinktemplatebucke-e17sthqcxpkw.s3.us-east-1.amazonaws.com/privatelink-single-stack-v7.yaml
+
+        - Name: v8
+          Description: Provider SSM support without changing the existing AMI parameter
+          Type: CLOUD_FORMATION_TEMPLATE
+          Info:
+            LoadTemplateFromURL: https://privatelink-bootstrap-sta-privatelinktemplatebucke-e17sthqcxpkw.s3.us-east-1.amazonaws.com/privatelink-single-stack-v8.yaml
+
+      SupportDescription: Brillio PrivateLink Demo Support
+      Tags:
+        - Key: Project
+          Value: PrivateLink-Demo
+
+Outputs:
+  ProductName:
+    Description: Service Catalog product name
+    Value: !GetAtt PrivateLinkCloudFormationProduct.ProductName
+
+  ProvisioningArtifactId:
+    Description: Product provisioning artifact reference
+    Value: !Ref PrivateLinkCloudFormationProduct

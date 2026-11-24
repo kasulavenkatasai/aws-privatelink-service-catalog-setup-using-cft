@@ -1,0 +1,76 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Associate the AWS PrivateLink Service Catalog product with the portfolio
+  and configure its launch role constraint.
+
+Parameters:
+
+  PortfolioId:
+    Type: String
+    Default: port-jj7zxhf7sp2xy
+    Description: Existing Service Catalog portfolio ID.
+
+  ProductId:
+    Type: String
+    Default: prod-t32m72ag2brs4
+    Description: Existing PrivateLink Service Catalog product ID.
+
+  LaunchRoleArn:
+    Type: String
+    Default: arn:aws:iam::153058522259:role/PrivateLink-ServiceCatalog-LaunchRole
+    Description: IAM role used by Service Catalog to launch the product.
+
+Resources:
+
+  # ==================================================
+  # 1. ASSOCIATE PRODUCT WITH PORTFOLIO
+  # ==================================================
+
+  PrivateLinkPortfolioProductAssociation:
+    Type: AWS::ServiceCatalog::PortfolioProductAssociation
+    Properties:
+      PortfolioId: !Ref PortfolioId
+      ProductId: !Ref ProductId
+
+  # ==================================================
+  # 2. CONFIGURE LAUNCH ROLE CONSTRAINT
+  # ==================================================
+
+  PrivateLinkLaunchRoleConstraint:
+    Type: AWS::ServiceCatalog::LaunchRoleConstraint
+    DependsOn:
+      - PrivateLinkPortfolioProductAssociation
+    Properties:
+      PortfolioId: !Ref PortfolioId
+      ProductId: !Ref ProductId
+      RoleArn: !Ref LaunchRoleArn
+      Description: >
+        Dedicated launch role for provisioning the AWS PrivateLink
+        Provider and Consumer infrastructure.
+
+# ==================================================
+# 3. OUTPUTS
+# ==================================================
+
+Outputs:
+
+  PortfolioProductAssociationId:
+    Description: Product and portfolio association ID
+    Value: !Ref PrivateLinkPortfolioProductAssociation
+
+  LaunchRoleConstraintId:
+    Description: Launch role constraint ID
+    Value: !Ref PrivateLinkLaunchRoleConstraint
+
+  AssociatedProductId:
+    Description: Associated Service Catalog product
+    Value: !Ref ProductId
+
+  AssociatedPortfolioId:
+    Description: Associated Service Catalog portfolio
+    Value: !Ref PortfolioId
+
+  LaunchRole:
+    Description: Service Catalog launch role
+    Value: !Ref LaunchRoleArn

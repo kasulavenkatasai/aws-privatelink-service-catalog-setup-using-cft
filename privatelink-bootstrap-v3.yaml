@@ -1,0 +1,347 @@
+
+
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+
+  Bootstrap infrastructure for the AWS PrivateLink Service Catalog demo.
+
+  Creates S3, IAM launch role, portfolio, client group and access permissions.
+
+
+
+Parameters:
+
+  ClientUserNames:
+
+    Type: CommaDelimitedList
+
+    Default: venkat
+
+    Description: >
+
+      Existing IAM usernames to add to the PrivateLink client group.
+
+      Enter multiple usernames separated by commas.
+
+
+
+Resources:
+
+
+
+  # --------------------------------------------------
+
+  # 1. S3 BUCKET FOR PRODUCT TEMPLATE
+
+  # --------------------------------------------------
+
+
+
+  PrivateLinkTemplateBucket:
+
+    Type: AWS::S3::Bucket
+
+    Properties:
+
+      PublicAccessBlockConfiguration:
+
+        BlockPublicAcls: true
+
+        BlockPublicPolicy: true
+
+        IgnorePublicAcls: true
+
+        RestrictPublicBuckets: true
+
+
+
+      OwnershipControls:
+
+        Rules:
+
+          - ObjectOwnership: BucketOwnerEnforced
+
+
+
+      BucketEncryption:
+
+        ServerSideEncryptionConfiguration:
+
+          - ServerSideEncryptionByDefault:
+
+              SSEAlgorithm: AES256
+
+
+
+      Tags:
+
+        - Key: Project
+
+          Value: PrivateLink-Demo
+
+
+
+  # --------------------------------------------------
+
+  # 2. SERVICE CATALOG PORTFOLIO
+
+  # --------------------------------------------------
+
+
+
+  PrivateLinkPortfolio:
+
+    Type: AWS::ServiceCatalog::Portfolio
+
+    Properties:
+
+      DisplayName: PrivateLink-Demo-Portfolio
+
+      Description: Same-account AWS PrivateLink demonstration
+
+      ProviderName: Brillio Demo
+
+
+
+  # --------------------------------------------------
+
+  # 3. SERVICE CATALOG LAUNCH ROLE
+
+  # --------------------------------------------------
+
+
+
+  PrivateLinkLaunchRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName: PrivateLink-ServiceCatalog-LaunchRole
+
+
+
+      AssumeRolePolicyDocument:
+
+        Version: '2012-10-17'
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service: servicecatalog.amazonaws.com
+
+            Action: sts:AssumeRole
+
+
+
+      ManagedPolicyArns:
+
+        - arn:aws:iam::aws:policy/PowerUserAccess
+
+
+
+      Policies:
+
+        - PolicyName: PrivateLinkLaunchAdditionalPermissions
+
+          PolicyDocument:
+
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Sid: AllowELBServiceLinkedRole
+
+                Effect: Allow
+
+                Action:
+
+                  - iam:CreateServiceLinkedRole
+
+                Resource: '*'
+
+                Condition:
+
+                  StringLike:
+
+                    iam:AWSServiceName:
+
+                      - elasticloadbalancing.amazonaws.com
+
+
+
+              - Sid: ManageConsumerSSMRoleAndProfile
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:GetInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/PrivateLink-Consumer-SSM-Role'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:instance-profile/PrivateLink-Consumer-SSM-Profile'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/PrivateLink-Provider-SSM-Role'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:instance-profile/PrivateLink-Provider-SSM-Profile'
+
+              - Sid: PassConsumerSSMRoleToEC2
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/PrivateLink-Consumer-SSM-Role'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/PrivateLink-Provider-SSM-Role'
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ec2.amazonaws.com
+              - Sid: ReadProductTemplateFromS3
+
+                Effect: Allow
+
+                Action:
+
+                  - s3:GetObject
+
+                Resource: !Sub
+
+                  - '${BucketArn}/*'
+
+                  - BucketArn: !GetAtt PrivateLinkTemplateBucket.Arn
+
+
+
+      Tags:
+
+        - Key: Project
+
+          Value: PrivateLink-Demo
+
+
+
+  # --------------------------------------------------
+
+  # 4. CLIENT IAM GROUP
+
+  # --------------------------------------------------
+
+
+
+  PrivateLinkClientGroup:
+
+    Type: AWS::IAM::Group
+
+    Properties:
+
+      GroupName: PrivateLink-Product-Users
+
+      ManagedPolicyArns:
+
+        - arn:aws:iam::aws:policy/AWSServiceCatalogEndUserFullAccess
+
+
+
+  # --------------------------------------------------
+
+  # 5. ADD EXISTING IAM USERS TO GROUP
+
+  # --------------------------------------------------
+
+
+
+  PrivateLinkClientGroupMembership:
+
+    Type: AWS::IAM::UserToGroupAddition
+
+    Properties:
+
+      GroupName: !Ref PrivateLinkClientGroup
+
+      Users: !Ref ClientUserNames
+
+
+
+  # --------------------------------------------------
+
+  # 6. ASSOCIATE CLIENT GROUP WITH PORTFOLIO
+
+  # --------------------------------------------------
+
+
+
+  PrivateLinkClientAssociation:
+
+    Type: AWS::ServiceCatalog::PortfolioPrincipalAssociation
+
+    Properties:
+
+      PortfolioId: !Ref PrivateLinkPortfolio
+
+      PrincipalARN: !GetAtt PrivateLinkClientGroup.Arn
+
+      PrincipalType: IAM
+
+
+
+  # --------------------------------------------------
+
+  # 7. OUTPUTS
+
+  # --------------------------------------------------
+
+
+
+Outputs:
+
+
+
+  TemplateBucketName:
+
+    Description: S3 bucket for the PrivateLink product template
+
+    Value: !Ref PrivateLinkTemplateBucket
+
+
+
+  PortfolioId:
+
+    Description: Service Catalog portfolio ID
+
+    Value: !Ref PrivateLinkPortfolio
+
+
+
+  LaunchRoleArn:
+
+    Description: Service Catalog launch role ARN
+
+    Value: !GetAtt PrivateLinkLaunchRole.Arn
+
+
+
+  ClientGroupName:
+
+    Description: IAM group for product users
+
+    Value: !Ref PrivateLinkClientGroup
+
+
+
+  ClientGroupArn:
+
+    Description: IAM group ARN associated with the portfolio
+
+    Value: !GetAtt PrivateLinkClientGroup.Arn
+
+
+

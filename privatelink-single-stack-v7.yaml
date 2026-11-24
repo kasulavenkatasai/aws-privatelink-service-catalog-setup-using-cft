@@ -1,0 +1,537 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Same-account AWS PrivateLink demonstration.
+  Creates Provider and Consumer VPCs, MariaDB, internal NLB,
+  VPC Endpoint Service, Interface Endpoint and connectivity test.
+
+Parameters:
+
+  LatestAmiId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-096ef200a877f36af
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+
+  ProviderVpcCidr:
+    Type: String
+    Default: 10.50.0.0/16
+
+  ProviderSubnetCidr:
+    Type: String
+    Default: 10.50.1.0/24
+
+  ConsumerVpcCidr:
+    Type: String
+    Default: 10.60.0.0/16
+
+  ConsumerSubnetCidr:
+    Type: String
+    Default: 10.60.1.0/24
+
+  DatabaseName:
+    Type: String
+    Default: privatelink_demo
+    AllowedPattern: '^[A-Za-z][A-Za-z0-9_]{2,30}$'
+
+  DatabaseUsername:
+    Type: String
+    Default: privatelink_app
+    AllowedPattern: '^[A-Za-z][A-Za-z0-9_]{2,30}$'
+
+  DatabasePassword:
+    Type: String
+    NoEcho: true
+    MinLength: 12
+    MaxLength: 32
+    AllowedPattern: '^[A-Za-z0-9!@#%^*_+=-]+$'
+    ConstraintDescription: >
+      Use 12-32 characters. Only letters, numbers and !@#%^*_+=- are allowed.
+
+Resources:
+
+  # ==================================================
+  # 1. PROVIDER VPC
+  # ==================================================
+
+  ProviderVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref ProviderVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: PrivateLink-Provider-VPC
+
+  ProviderInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Provider-IGW
+
+  ProviderInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ProviderVpc
+      InternetGatewayId: !Ref ProviderInternetGateway
+
+  ProviderSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ProviderVpc
+      CidrBlock: !Ref ProviderSubnetCidr
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Provider-Public-Subnet
+
+  ProviderRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ProviderVpc
+
+  ProviderDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: ProviderInternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref ProviderRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref ProviderInternetGateway
+
+  ProviderSubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ProviderSubnet
+      RouteTableId: !Ref ProviderRouteTable
+
+  # ==================================================
+  # 2. PROVIDER SECURITY GROUPS
+  # ==================================================
+
+  ProviderNlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Network Load Balancer security group.
+      VpcId: !Ref ProviderVpc
+      Tags:
+        - Key: Name
+          Value: Provider-NLB-SG
+
+  ProviderDatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MariaDB only from Provider NLB.
+      VpcId: !Ref ProviderVpc
+      SecurityGroupIngress:
+        - Description: MariaDB traffic from NLB
+          IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref ProviderNlbSecurityGroup
+      Tags:
+        - Key: Name
+          Value: Provider-Database-SG
+
+  # ==================================================
+  # 3. PROVIDER MARIADB EC2
+  # ==================================================
+
+  ProviderDatabaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: PrivateLink-Provider-SSM-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Project
+          Value: PrivateLink-Demo
+
+  ProviderDatabaseInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: PrivateLink-Provider-SSM-Profile
+      Roles:
+        - !Ref ProviderDatabaseRole
+  ProviderDatabaseInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - ProviderDefaultRoute
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ProviderDatabaseInstanceProfile
+      SubnetId: !Ref ProviderSubnet
+      SecurityGroupIds:
+        - !Ref ProviderDatabaseSecurityGroup
+
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          dnf install -y mariadb105-server
+
+          cat > /etc/my.cnf.d/privatelink.cnf <<'EOF'
+          [mysqld]
+          bind-address=0.0.0.0
+          EOF
+
+          systemctl enable mariadb
+          systemctl restart mariadb
+
+          for attempt in $(seq 1 60); do
+            if mariadb-admin ping --silent; then
+              break
+            fi
+            sleep 2
+          done
+
+          mariadb -e "CREATE DATABASE IF NOT EXISTS ${DatabaseName};"
+
+          mariadb -e "CREATE USER IF NOT EXISTS '${DatabaseUsername}'@'%' IDENTIFIED BY '${DatabasePassword}';"
+
+          mariadb -e "ALTER USER '${DatabaseUsername}'@'%' IDENTIFIED BY '${DatabasePassword}';"
+
+          mariadb -e "GRANT ALL PRIVILEGES ON ${DatabaseName}.* TO '${DatabaseUsername}'@'%';"
+
+          mariadb -e "FLUSH PRIVILEGES;"
+
+      Tags:
+        - Key: Name
+          Value: PrivateLink-Provider-MariaDB
+
+  # ==================================================
+  # 4. PROVIDER NETWORK LOAD BALANCER
+  # ==================================================
+
+  ProviderTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: PrivateLink-DB-TG
+      VpcId: !Ref ProviderVpc
+      Protocol: TCP
+      Port: 3306
+      TargetType: instance
+      HealthCheckProtocol: TCP
+      HealthCheckPort: traffic-port
+      Targets:
+        - Id: !Ref ProviderDatabaseInstance
+          Port: 3306
+      Tags:
+        - Key: Name
+          Value: PrivateLink-DB-TargetGroup
+
+  ProviderNetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn:
+      - ProviderSubnetRouteAssociation
+    Properties:
+      Name: PrivateLink-Provider-NLB
+      Type: network
+      Scheme: internal
+      Subnets:
+        - !Ref ProviderSubnet
+      SecurityGroups:
+        - !Ref ProviderNlbSecurityGroup
+      EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: 'off'
+      LoadBalancerAttributes:
+        - Key: load_balancing.cross_zone.enabled
+          Value: 'true'
+      Tags:
+        - Key: Name
+          Value: PrivateLink-Provider-NLB
+
+  ProviderNlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ProviderNetworkLoadBalancer
+      Protocol: TCP
+      Port: 3306
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ProviderTargetGroup
+
+  # ==================================================
+  # 5. PRIVATE LINK ENDPOINT SERVICE
+  # ==================================================
+
+  ProviderEndpointService:
+    Type: AWS::EC2::VPCEndpointService
+    DependsOn:
+      - ProviderNlbListener
+    Properties:
+      AcceptanceRequired: false
+      NetworkLoadBalancerArns:
+        - !Ref ProviderNetworkLoadBalancer
+
+  ProviderEndpointServicePermissions:
+    Type: AWS::EC2::VPCEndpointServicePermissions
+    Properties:
+      ServiceId: !Ref ProviderEndpointService
+      AllowedPrincipals:
+        - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+
+  # ==================================================
+  # 6. CONSUMER VPC
+  # ==================================================
+
+  ConsumerVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref ConsumerVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: PrivateLink-Consumer-VPC
+
+  ConsumerInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Consumer-IGW
+
+  ConsumerInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ConsumerVpc
+      InternetGatewayId: !Ref ConsumerInternetGateway
+
+  ConsumerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ConsumerVpc
+      CidrBlock: !Ref ConsumerSubnetCidr
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Consumer-Public-Subnet
+
+  ConsumerRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ConsumerVpc
+
+  ConsumerDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: ConsumerInternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref ConsumerRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref ConsumerInternetGateway
+
+  ConsumerSubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ConsumerSubnet
+      RouteTableId: !Ref ConsumerRouteTable
+
+  # ==================================================
+  # 7. CONSUMER SECURITY GROUPS
+  # ==================================================
+
+  ConsumerClientSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Consumer EC2 client outbound access.
+      VpcId: !Ref ConsumerVpc
+      Tags:
+        - Key: Name
+          Value: Consumer-Client-SG
+
+  ConsumerEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MariaDB from Consumer client.
+      VpcId: !Ref ConsumerVpc
+      SecurityGroupIngress:
+        - Description: MariaDB connection from Consumer EC2
+          IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref ConsumerClientSecurityGroup
+      Tags:
+        - Key: Name
+          Value: Consumer-Endpoint-SG
+
+  # ==================================================
+  # 8. CONSUMER INTERFACE ENDPOINT
+  # ==================================================
+
+  ConsumerInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    DependsOn:
+      - ProviderEndpointServicePermissions
+      - ConsumerSubnetRouteAssociation
+    Properties:
+      VpcId: !Ref ConsumerVpc
+      VpcEndpointType: Interface
+      ServiceName: !Sub 'com.amazonaws.vpce.${AWS::Region}.${ProviderEndpointService}'
+      SubnetIds:
+        - !Ref ConsumerSubnet
+      SecurityGroupIds:
+        - !Ref ConsumerEndpointSecurityGroup
+      PrivateDnsEnabled: false
+      Tags:
+        - Key: Name
+          Value: PrivateLink-Consumer-Endpoint
+
+  # ==================================================
+  # 9. CONSUMER EC2 CLIENT
+  # ==================================================
+
+  ConsumerClientRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: PrivateLink-Consumer-SSM-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Project
+          Value: PrivateLink-Demo
+
+  ConsumerClientInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: PrivateLink-Consumer-SSM-Profile
+      Roles:
+        - !Ref ConsumerClientRole
+  ConsumerClientInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - ConsumerInterfaceEndpoint
+      - ConsumerDefaultRoute
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ConsumerClientInstanceProfile
+      SubnetId: !Ref ConsumerSubnet
+      SecurityGroupIds:
+        - !Ref ConsumerClientSecurityGroup
+
+      UserData:
+        Fn::Base64:
+          !Sub
+            - |
+              #!/bin/bash
+              set -u
+
+              exec > /var/log/privatelink-test.log 2>&1
+
+              echo "Installing MariaDB client..."
+              dnf install -y mariadb105
+
+              echo "Waiting for PrivateLink database connectivity..."
+
+              for attempt in $(seq 1 60); do
+
+                if MYSQL_PWD='${DatabasePassword}' mariadb \
+                  --connect-timeout=5 \
+                  -h '${EndpointDnsName}' \
+                  -u '${DatabaseUsername}' \
+                  '${DatabaseName}' \
+                  -e "SELECT 'PrivateLink connection successful' AS result;"; then
+
+                  echo "SUCCESS: Consumer connected to Provider database through AWS PrivateLink."
+                  exit 0
+
+                fi
+
+                echo "Attempt $attempt failed. Retrying..."
+                sleep 5
+
+              done
+
+              echo "FAILED: Could not connect to Provider database through PrivateLink."
+              exit 1
+
+            - EndpointDnsName: !Select [1, !Split [":", !Select [0, !GetAtt ConsumerInterfaceEndpoint.DnsEntries]]]
+
+      Tags:
+        - Key: Name
+          Value: PrivateLink-Consumer-Client
+
+# ==================================================
+# 10. OUTPUTS
+# ==================================================
+
+Outputs:
+
+  ProviderVpcId:
+    Description: Provider VPC ID
+    Value: !Ref ProviderVpc
+
+  ConsumerVpcId:
+    Description: Consumer VPC ID
+    Value: !Ref ConsumerVpc
+
+  ProviderDatabaseInstanceId:
+    Description: Provider MariaDB EC2 instance ID
+    Value: !Ref ProviderDatabaseInstance
+
+  ProviderDatabasePublicIp:
+    Description: Provider database public IP for outbound access only
+    Value: !GetAtt ProviderDatabaseInstance.PublicIp
+
+  ProviderNlbDnsName:
+    Description: Internal Network Load Balancer DNS
+    Value: !GetAtt ProviderNetworkLoadBalancer.DNSName
+
+  EndpointServiceId:
+    Description: PrivateLink Endpoint Service ID
+    Value: !Ref ProviderEndpointService
+
+  EndpointServiceName:
+    Description: PrivateLink Endpoint Service Name
+    Value: !Sub 'com.amazonaws.vpce.${AWS::Region}.${ProviderEndpointService}'
+
+  ConsumerEndpointId:
+    Description: Consumer Interface Endpoint ID
+    Value: !Ref ConsumerInterfaceEndpoint
+
+  ConsumerEndpointDnsName:
+    Description: Consumer Interface Endpoint DNS hostname
+    Value: !Select [1, !Split [":", !Select [0, !GetAtt ConsumerInterfaceEndpoint.DnsEntries]]]
+
+  ConsumerClientInstanceId:
+    Description: Consumer EC2 client instance ID
+    Value: !Ref ConsumerClientInstance
+
+  ConsumerClientPublicIp:
+    Description: Consumer EC2 public IP for outbound access
+    Value: !GetAtt ConsumerClientInstance.PublicIp
+
+  DatabaseNameOutput:
+    Description: MariaDB database name
+    Value: !Ref DatabaseName
+
+  DatabaseUsernameOutput:
+    Description: MariaDB application username
+    Value: !Ref DatabaseUsername
